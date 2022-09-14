@@ -1,0 +1,96 @@
+;
+; KeyboardMacro.inf
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Keyboard ; TODO: specify appropriate Class
+ClassGuid=%ClassGUIDToFilter% ; TODO: specify appropriate ClassGuid
+Provider=%ManufacturerName%
+CatalogFile=KeyboardMacro.cat
+DriverVer= ; TODO: set DriverVer in stampinf property pages
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+KeyboardMacro_Device_CoInstaller_CopyFiles = 11
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+KeyboardMacro.sys  = 1,,
+WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll=1 ; make sure the number matches with SourceDisksNames
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$
+
+[Standard.NT$ARCH$]
+%KeyboardMacro.DeviceDesc%=KeyboardMacro_Device, ACPI\VEN_LEN&DEV_0071 ; TODO: edit hw-id
+
+[KeyboardMacro_Device.NT]
+Include=keyboard.inf
+Needs=STANDARD_Inst
+
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+KeyboardMacro.sys
+
+;-------------- Service installation
+[KeyboardMacro_Device.NT.Services]
+AddService = KeyboardMacro,%SPSVCINST_ASSOCSERVICE%, KeyboardMacro_Service_Inst
+Include=keyboard.inf
+Needs=STANDARD_Inst.Services
+
+; -------------- KeyboardMacro driver install sections
+[KeyboardMacro_Service_Inst]
+DisplayName    = %KeyboardMacro.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 0               ; SERVICE_BOOT_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\KeyboardMacro.sys
+
+
+[KeyboardMacro_Device.NT.HW]
+; Add the device upper filter
+AddReg = KeyboardMacro_Device.HW.AddReg
+
+; run the directives need by the port driver
+Include=keyboard.inf
+Needs=STANDARD_Inst.HW
+
+
+[KeyboardMacro_Device.HW.AddReg]
+HKLM, System\CurrentControlSet\Control\Class\%ClassGUIDToFilter%,"UpperFilters",0x00010008,"KeyboardMacro"
+
+;
+;--- KeyboardMacro_Device Coinstaller installation ------
+;
+
+[KeyboardMacro_Device.NT.CoInstallers]
+AddReg=KeyboardMacro_Device_CoInstaller_AddReg
+CopyFiles=KeyboardMacro_Device_CoInstaller_CopyFiles
+
+[KeyboardMacro_Device_CoInstaller_AddReg]
+HKR,,CoInstallers32,0x00010000, "WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll,WdfCoInstaller"
+
+[KeyboardMacro_Device_CoInstaller_CopyFiles]
+WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll
+
+[KeyboardMacro_Device.NT.Wdf]
+KmdfService =  KeyboardMacro, KeyboardMacro_wdfsect
+[KeyboardMacro_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+ClassGUIDToFilter= "{4D36E96B-E325-11CE-BFC1-08002BE10318}"
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ManufacturerName="<Your manufacturer name>" ;TODO: Replace with your manufacturer name
+DiskName = "KeyboardMacro Installation Disk"
+KeyboardMacro.DeviceDesc = "KeyboardMacro Device"
+KeyboardMacro.SVCDESC = "KeyboardMacro Service"
