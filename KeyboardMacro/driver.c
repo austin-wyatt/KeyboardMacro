@@ -271,10 +271,16 @@ VOID KeyboardMacroServiceCallback(
 	WdfSpinLockAcquire(deviceExtension->KeypressSpinLock);
 	for(PKEYBOARD_INPUT_DATA i = InputDataStart; i < InputDataEnd; i++)
 	{
+		//ignore fake shifts
+		if (i->MakeCode == 0x2a && i->Flags & KEY_E0)
+		{
+			continue;
+		}
+
 		if(deviceExtension->KEY_MAP[i->MakeCode] != MACRO_KEY_INVALID)
 		{
 			//If this is a key up event, ensure there was a registered key down event beforehand
-			if((i->Flags & 1) && deviceExtension->KEY_MAP[i->MakeCode] == 1)
+			if((i->Flags & KEY_BREAK) && deviceExtension->KEY_MAP[i->MakeCode] == 1)
 			{
 				deviceExtension->KEYS_DOWN--;
 				deviceExtension->KEY_MAP[i->MakeCode] = 0;
@@ -300,12 +306,27 @@ VOID KeyboardMacroServiceCallback(
 		{
 			switch(i->MakeCode)
 			{
-				//If the keyboard throws an error then reset all of the tracked values
+				//If the keyboard throws an error or the escape key is pressed then reset the key data
 				case 0xff:
+				case 0x01:
 					InitializeKeyData(deviceExtension);
 					break;
 			}
 		}
+	}
+
+	if (deviceExtension->IsRegistered == TRUE)
+	{
+		KEYBOARD_INPUT_DATA replacementBuffer[2];
+
+		replacementBuffer[0].Reserved = 0;
+		replacementBuffer[0].MakeCode = 0xFF;
+
+		replacementBuffer[1] = *InputDataEnd;
+
+		InputDataStart = replacementBuffer;
+		InputDataEnd = replacementBuffer + 1;
+		*InputDataConsumed = 0;
 	}
 
 	if (deviceExtension->KEYS_DOWN == 0 && deviceExtension->OutputBufferLength > 0)
@@ -316,14 +337,80 @@ VOID KeyboardMacroServiceCallback(
 			WdfRequestCompleteWithInformation(deviceExtension->UserAppCallbackRequest, STATUS_SUCCESS, MACRO_RESPONSE_KEY_DATA_AVAILABLE);
 			deviceExtension->UserAppCallbackRequest = NULL;
 		}
+		else if(deviceExtension->OutputBufferLength == 3)
+		{
+			const int SCAN_CODE_LENGTH = 3;
+			//right ctrl + page up + page down
+			int activationScanCodes[3];
+
+			activationScanCodes[0] = 0x1d;
+			activationScanCodes[1] = 0x49;
+			activationScanCodes[2] = 0x51;
+
+			int unitID = -1;
+
+			OUTPUT_BUFFER_STRUCT keyData;
+
+			int i;
+			for (i = 0; i < (int)deviceExtension->OutputBufferLength; i++) 
+			{
+				keyData = *((OUTPUT_BUFFER_STRUCT*)deviceExtension->OUTPUT_BUFFER + i);
+
+				//ensure all of the keypresses come from the same keyboard
+				if (unitID == -1)
+				{
+					unitID = keyData.UnitId;
+				}
+				else if (unitID != keyData.UnitId)
+				{
+					goto clearBuffer;
+				}
+
+				//check the activation sequence
+				int j;
+				for (j = 0; j < SCAN_CODE_LENGTH; j++)
+				{
+					if(activationScanCodes[j] == keyData.MakeCode)
+					{
+						activationScanCodes[j] = -1;
+						break;
+					}
+
+					switch(keyData.MakeCode)
+					{
+						case 0x49:
+						case 0x51:
+							//The e0 flag indicates that these page up and page down codes
+							//are from the dedicated buttons as opposed to the numpad
+							if (!(keyData.Flags & KEY_E0)) 
+								goto clearBuffer;
+							break;
+					}
+				}
+
+				if (j == SCAN_CODE_LENGTH)
+					goto clearBuffer;
+			}
+
+			for (i = 0; i < SCAN_CODE_LENGTH; i++) 
+			{
+				if (activationScanCodes[i] != -1)
+					goto clearBuffer;
+			}
+
+			//register the keyboard
+			KeyboardInterfaceRegisterDevice(deviceExtension->KeyboardInterface, hDevice);
+		}
 		else
 		{
+			clearBuffer:
 			//Otherwise clear the buffer and await a user app callback
 			deviceExtension->OutputBufferLength = 0;
 		}
 	}
 
 	WdfSpinLockRelease(deviceExtension->KeypressSpinLock);
+	
 
 	//This calls the original connect data's callback
 	(*(PSERVICE_CALLBACK_ROUTINE)deviceExtension->KeyboardConnectData.ClassService)(
@@ -496,6 +583,8 @@ VOID PrepareKeyMapArray(UCHAR* keyMap)
 	keyMap[0xfd] = MACRO_KEY_INVALID; //Internal failure
 	keyMap[0xfe] = MACRO_KEY_INVALID; //Keyboard fails to ack
 	keyMap[0xff] = MACRO_KEY_INVALID; //Keyboard error
+
+	keyMap[0x01] = MACRO_KEY_INVALID; //Escape key, reserved for clearing the key buffer if things break
 }
 
 VOID InitializeKeyData(PDEVICE_EXTENSION deviceExtension) 

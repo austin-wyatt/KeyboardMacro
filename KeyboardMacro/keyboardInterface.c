@@ -81,44 +81,79 @@ VOID KeyboardInterfaceEvtIoRead(
 	PKEYBOARD_CONTEXT keyboardContext = GetKeyboardExtension(hDevice);
 
 	WDFMEMORY outputMemory = NULL;
-
-	if (keyboardContext->RegisteredKeyboard == -1)
+	
+	switch (keyboardContext->READ_MODE) 
 	{
-		WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, MACRO_RESPONSE_NO_REGISTERED_KEYBOARD);
-		return;
+		case MACRO_KeyBuffer:
+			if (keyboardContext->RegisteredKeyboard == NULL)
+			{
+				WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, MACRO_RESPONSE_NO_REGISTERED_KEYBOARD);
+				return;
+			}
+
+			PDEVICE_EXTENSION deviceExtension = GetDeviceExtension(keyboardContext->RegisteredKeyboard);
+
+			WdfSpinLockAcquire(deviceExtension->KeypressSpinLock);
+
+			int internalBufferSize = deviceExtension->OutputBufferLength * OUTPUT_BUFFER_INDEX_SIZE;
+
+			if (deviceExtension->OutputBufferLength == 0 || Length < internalBufferSize)
+			{
+				WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, MACRO_RESPONSE_FAILURE);
+				goto releaseLock;
+			}
+
+			WdfRequestRetrieveOutputMemory(Request, &outputMemory);
+
+			if (outputMemory != NULL)
+			{
+				status = WdfMemoryCopyFromBuffer(outputMemory, 0, deviceExtension->OUTPUT_BUFFER, internalBufferSize);
+			}
+
+
+			if (!NT_SUCCESS(status))
+			{
+				WdfRequestCompleteWithInformation(Request, status, MACRO_RESPONSE_FAILURE);
+				goto releaseLock;
+			}
+
+			WdfRequestCompleteWithInformation(Request, status, internalBufferSize);
+
+			InitializeKeyData(deviceExtension);
+
+
+			releaseLock:
+			WdfSpinLockRelease(deviceExtension->KeypressSpinLock);
+
+			break;
+		case MACRO_KeyboardDevices:
+			keyboardContext->READ_MODE = MACRO_KeyBuffer;
+
+			int devicesSizeBytes = keyboardContext->CurrentDevices * sizeof(HANDLE);
+
+			if (Length < devicesSizeBytes)
+			{
+				WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, MACRO_RESPONSE_FAILURE);
+				return;
+			}
+
+			WdfRequestRetrieveOutputMemory(Request, &outputMemory);
+
+			if (outputMemory != NULL)
+			{
+				status = WdfMemoryCopyFromBuffer(outputMemory, 0, keyboardContext->KeyboardDevices, devicesSizeBytes);
+			}
+
+			if (!NT_SUCCESS(status))
+			{
+				WdfRequestCompleteWithInformation(Request, status, MACRO_RESPONSE_FAILURE);
+				return;
+			}
+
+			WdfRequestCompleteWithInformation(Request, status, devicesSizeBytes);
+
+			break;
 	}
-
-	PDEVICE_EXTENSION deviceExtension = GetDeviceExtension(keyboardContext->KeyboardDevices[keyboardContext->RegisteredKeyboard]);
-
-	WdfSpinLockAcquire(deviceExtension->KeypressSpinLock);
-
-	int internalBufferSize = deviceExtension->OutputBufferLength * OUTPUT_BUFFER_INDEX_SIZE;
-
-	if (deviceExtension->OutputBufferLength == 0 || Length < internalBufferSize)
-	{
-		WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, MACRO_RESPONSE_FAILURE);
-		return;
-	}
-
-	WdfRequestRetrieveOutputMemory(Request, &outputMemory);
-
-	if (outputMemory != NULL) 
-	{
-		status = WdfMemoryCopyFromBuffer(outputMemory, 0, deviceExtension->OUTPUT_BUFFER, internalBufferSize);
-	}
-
-
-	if (!NT_SUCCESS(status))
-	{
-		WdfRequestCompleteWithInformation(Request, status, MACRO_RESPONSE_FAILURE);
-		return;
-	}
-
-	WdfRequestCompleteWithInformation(Request, status, internalBufferSize);
-
-	InitializeKeyData(deviceExtension);
-
-	WdfSpinLockRelease(deviceExtension->KeypressSpinLock);
 }
 
 VOID KeyboardInterfaceEvtIoWrite(
@@ -128,7 +163,6 @@ VOID KeyboardInterfaceEvtIoWrite(
 )
 {
 	//KdBreakPoint();
-
 	NTSTATUS status;
 	WDFDEVICE hDevice = WdfIoQueueGetDevice(Queue);
 	PKEYBOARD_CONTEXT keyboardContext = GetKeyboardExtension(hDevice);
@@ -136,7 +170,7 @@ VOID KeyboardInterfaceEvtIoWrite(
 	WDFMEMORY inputMemory;
 	MACRO_REQUEST macroRequest;
 
-	if (Length < sizeof(int))
+	if (Length < sizeof(MACRO_REQUEST))
 	{
 		WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, MACRO_RESPONSE_FAILURE);
 		return;
@@ -164,36 +198,86 @@ VOID KeyboardInterfaceEvtIoWrite(
 	switch (macroRequest.Code) 
 	{
 		case MACRO_REQUEST_SET_CALLBACK:
-			deviceExtension = GetDeviceExtension(keyboardContext->KeyboardDevices[keyboardContext->RegisteredKeyboard]);
+			if (keyboardContext->RegisteredKeyboard == NULL) 
+			{
+				if (keyboardContext->OrphanedCallback == NULL) 
+				{
+					keyboardContext->OrphanedCallback = Request;
+				}
+				else 
+				{
+					WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS,
+						MACRO_RESPONSE_NO_REGISTERED_KEYBOARD | MACRO_RESPONSE_FLAG_NO_RENEW);
+				}
+				return;
+			}
+
+			deviceExtension = GetDeviceExtension(keyboardContext->RegisteredKeyboard);
 
 			WdfSpinLockAcquire(deviceExtension->KeypressSpinLock);
-
-			/*RtlZeroMemory(deviceExtension->KEY_MAP, KEY_MAP_SIZE);
-			deviceExtension->KEYS_DOWN = 0;*/
 
 			deviceExtension->UserAppCallbackRequest = Request;
 
 			WdfSpinLockRelease(deviceExtension->KeypressSpinLock);
 			break;
 		case MACRO_REQUEST_CANCEL_CALLBACK:
-			deviceExtension = GetDeviceExtension(keyboardContext->KeyboardDevices[keyboardContext->RegisteredKeyboard]);
-			
-			WdfSpinLockAcquire(deviceExtension->KeypressSpinLock);
-
-			if (deviceExtension->UserAppCallbackRequest != NULL) 
+			if (keyboardContext->OrphanedCallback != NULL) 
 			{
-				WdfRequestCompleteWithInformation(deviceExtension->UserAppCallbackRequest, STATUS_SUCCESS, MACRO_RESPONSE_CALLBACK_CANCELED);
-				deviceExtension->UserAppCallbackRequest = NULL;
+				WdfRequestCompleteWithInformation(keyboardContext->OrphanedCallback, STATUS_SUCCESS, 
+					MACRO_RESPONSE_CALLBACK_CANCELED | MACRO_RESPONSE_FLAG_NO_RENEW);
+
+				keyboardContext->OrphanedCallback = NULL;
 			}
-
-			InitializeKeyData(deviceExtension);
-
-			WdfSpinLockRelease(deviceExtension->KeypressSpinLock);
+			else 
+			{
+				MacroRequestCancelCallback(hDevice, keyboardContext->RegisteredKeyboard,
+					MACRO_RESPONSE_CALLBACK_CANCELED | MACRO_RESPONSE_FLAG_NO_RENEW);
+			}
 
 			WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, MACRO_RESPONSE_EMPTY);
 			break;
+		case MACRO_REQUEST_GET_KEYBOARDS:
+			keyboardContext->READ_MODE = MACRO_KeyboardDevices;
+
+			WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, MACRO_RESPONSE_KEYBOARD_DATA_AVAILABLE);
+			break;
+		case MACRO_REQUEST_REGISTER_KEYBOARD:
+			//TODO, potentially not even necessary
+			/*for (i = 0; i < keyboardContext->CurrentDevices; i++) 
+			{
+				if (keyboardContext->KeyboardDevices[i] == (WDFDEVICE)macroRequest.Data 
+					&& keyboardContext->KeyboardDevices[i] != keyboardContext->RegisteredKeyboard)
+				{
+					KeyboardInterfaceRegisterDevice(hDevice, keyboardContext->KeyboardDevices[i]);
+					break;
+				}
+			}
+
+			if (i == keyboardContext->CurrentDevices) 
+			{
+
+			}
+			else 
+			{
+
+			}
+
+			MacroRequestCancelCallback(hDevice, keyboardContext->RegisteredKeyboard,
+				MACRO_RESPONSE_NO_REGISTERED_KEYBOARD | MACRO_RESPONSE_FLAG_NO_RENEW);*/
+			break;
+		case MACRO_REQUEST_UNREGISTER_KEYBOARD:
+			if (keyboardContext->RegisteredKeyboard != NULL) 
+			{
+				KeyboardInterfaceUnregisterDevice(hDevice);
+				WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, MACRO_RESPONSE_EMPTY);
+			}
+			else 
+			{
+				WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, MACRO_RESPONSE_NO_ACTION_TAKEN);
+			}
+			break;
 		default:
-			WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, MACRO_RESPONSE_EMPTY);
+			WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, MACRO_RESPONSE_NO_ACTION_TAKEN);
 			break;
 	}
 }
@@ -201,6 +285,11 @@ VOID KeyboardInterfaceEvtIoWrite(
 void KeyboardInterfaceRemoveDevice(WDFDEVICE keyboardInterface, WDFOBJECT object)
 {
 	PKEYBOARD_CONTEXT keyboardContext = GetKeyboardExtension(keyboardInterface);
+
+	if (keyboardContext->RegisteredKeyboard == object) 
+	{
+		KeyboardInterfaceUnregisterDevice(keyboardInterface);
+	}
 
 	for (int i = 0; i < keyboardContext->CurrentDevices; i++) 
 	{
@@ -212,4 +301,87 @@ void KeyboardInterfaceRemoveDevice(WDFDEVICE keyboardInterface, WDFOBJECT object
 			keyboardContext->CurrentDevices--;
 		}
 	}
+
+	if (keyboardContext->CurrentDevices <= 1) 
+	{
+		KeyboardInterfaceUnregisterDevice(keyboardInterface);
+	}
+}
+
+void KeyboardInterfaceRegisterDevice(WDFDEVICE keyboardInterface, WDFOBJECT object) 
+{
+	PKEYBOARD_CONTEXT keyboardContext = GetKeyboardExtension(keyboardInterface);
+
+	if (keyboardContext->CurrentDevices <= 1) 
+	{
+		//Don't allow the only keyboard to be registered
+		return;
+	}
+
+	for (int i = 0; i < keyboardContext->CurrentDevices; i++)
+	{
+		if (keyboardContext->KeyboardDevices[i] == object && object != keyboardContext->RegisteredKeyboard)
+		{
+			PDEVICE_EXTENSION newDeviceExtension = GetDeviceExtension(keyboardContext->KeyboardDevices[i]);
+			if (keyboardContext->RegisteredKeyboard != NULL)
+			{
+				PDEVICE_EXTENSION oldDeviceExtension = GetDeviceExtension(keyboardContext->RegisteredKeyboard);
+
+				newDeviceExtension->UserAppCallbackRequest = oldDeviceExtension->UserAppCallbackRequest;
+				oldDeviceExtension->UserAppCallbackRequest = NULL;
+				oldDeviceExtension->IsRegistered = FALSE;
+
+				InitializeKeyData(oldDeviceExtension);
+			}
+			else if (keyboardContext->OrphanedCallback != NULL) 
+			{
+				newDeviceExtension->UserAppCallbackRequest = keyboardContext->OrphanedCallback;
+				keyboardContext->OrphanedCallback = NULL;
+			}
+
+			newDeviceExtension->IsRegistered = TRUE;
+			InitializeKeyData(newDeviceExtension);
+
+			keyboardContext->RegisteredKeyboard = object;
+
+			return;
+		}
+	}
+}
+
+void KeyboardInterfaceUnregisterDevice(WDFDEVICE keyboardInterface) 
+{
+	PKEYBOARD_CONTEXT keyboardContext = GetKeyboardExtension(keyboardInterface);
+
+	if (keyboardContext->RegisteredKeyboard != NULL) 
+	{
+		PDEVICE_EXTENSION deviceExtension = GetDeviceExtension(keyboardContext->RegisteredKeyboard);
+
+		MacroRequestCancelCallback(keyboardInterface, keyboardContext->RegisteredKeyboard, MACRO_RESPONSE_CALLBACK_CANCELED);
+		deviceExtension->IsRegistered = FALSE;
+		keyboardContext->RegisteredKeyboard = NULL;
+	}
+}
+
+void MacroRequestCancelCallback(WDFDEVICE keyboardInterface, WDFOBJECT device, ULONG reponse)
+{
+	if (device == NULL)
+		return;
+
+	PKEYBOARD_CONTEXT keyboardContext = GetKeyboardExtension(keyboardInterface);
+	PDEVICE_EXTENSION deviceExtension = GetDeviceExtension(device);
+
+	deviceExtension = GetDeviceExtension(keyboardContext->RegisteredKeyboard);
+
+	WdfSpinLockAcquire(deviceExtension->KeypressSpinLock);
+
+	if (deviceExtension->UserAppCallbackRequest != NULL)
+	{
+		WdfRequestCompleteWithInformation(deviceExtension->UserAppCallbackRequest, STATUS_SUCCESS, reponse);
+		deviceExtension->UserAppCallbackRequest = NULL;
+	}
+
+	InitializeKeyData(deviceExtension);
+
+	WdfSpinLockRelease(deviceExtension->KeypressSpinLock);
 }

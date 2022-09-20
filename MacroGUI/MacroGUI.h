@@ -9,7 +9,13 @@
 #include <initguid.h>
 #include "public.h"
 
-void WriteToDevice(HANDLE deviceHandle, int code, int data);
-void ReadFromDevice(HANDLE deviceHandle);
+enum class InternalMacroReadCode
+{
+	KeyData,
+	KeyboardDevices
+};
+
+void WriteToDevice(HANDLE deviceHandle, int code, long long data);
+void ReadFromDevice(HANDLE deviceHandle, InternalMacroReadCode readCode);
 
 HANDLE CreateDeviceHandle();

@@ -14,6 +14,8 @@ using namespace std;
 
 vector<HANDLE> handleList;
 
+bool callbackActive = false;
+
 int main()
 {
     HANDLE callbackHandle = CreateDeviceHandle();
@@ -55,9 +57,7 @@ int main()
     int tex_w, tex_h;
     io.Fonts->GetTexDataAsRGBA32(&tex_pixels, &tex_w, &tex_h);*/
 
-    thread requestThread;
-
-    while (!glfwWindowShouldClose(window)) 
+    while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
 
@@ -67,7 +67,7 @@ int main()
 
         bool my_tool_active = true;
 
-        ImGui::Begin("My First Tool", &my_tool_active, ImGuiWindowFlags_MenuBar);
+        ImGui::Begin("My First Tool", &my_tool_active, ImGuiWindowFlags_NoTitleBar);
         /*if (ImGui::BeginMenuBar())
         {
             if (ImGui::BeginMenu("File"))
@@ -78,16 +78,38 @@ int main()
             ImGui::EndMenuBar();
         }*/
 
-        if (ImGui::Button("Send callback")) 
+        if (ImGui::Button("Send callback"))
         {
-            requestThread = thread(WriteToDevice, callbackHandle, MACRO_REQUEST_SET_CALLBACK, 0);
+            if (!callbackActive) 
+            {
+                cout << "Send callback" << endl;
+
+                callbackActive = true;
+                thread(WriteToDevice, callbackHandle, MACRO_REQUEST_SET_CALLBACK, 0).detach();
+            }
         }
 
-        if(ImGui::Button("Stop reading inputs"))
+        if (ImGui::Button("Stop reading inputs"))
         {
-            thread endThread(WriteToDevice, shortTermHandle, MACRO_REQUEST_CANCEL_CALLBACK, 0);
-            requestThread.join();
-            endThread.join();
+            thread endCallbackThread(WriteToDevice, shortTermHandle, MACRO_REQUEST_CANCEL_CALLBACK, 0);
+
+            
+
+            endCallbackThread.join();
+        }
+
+        if (ImGui::Button("Get devices"))
+        {
+            thread devicesThread(WriteToDevice, shortTermHandle, MACRO_REQUEST_GET_KEYBOARDS, 0);
+
+            devicesThread.join();
+        }
+
+        if (ImGui::Button("Unregister device"))
+        {
+            thread devicesThread(WriteToDevice, shortTermHandle, MACRO_REQUEST_UNREGISTER_KEYBOARD, 0);
+
+            devicesThread.join();
         }
 
         ImGui::End();
@@ -110,8 +132,8 @@ int main()
     glfwDestroyWindow(window);
     glfwTerminate();
 
-
     thread endThread(WriteToDevice, shortTermHandle, MACRO_REQUEST_CANCEL_CALLBACK, 0);
+    cout << "closing handles" << endl;
     for (int i = 0; i < handleList.size(); i++)
     {
         CloseHandle(handleList[i]);
@@ -121,7 +143,7 @@ int main()
 }
 
 
-void WriteToDevice(HANDLE deviceHandle, int code, int data)
+void WriteToDevice(HANDLE deviceHandle, int code, long long data)
 {
     BOOL operationSuccess;
 
@@ -133,41 +155,70 @@ void WriteToDevice(HANDLE deviceHandle, int code, int data)
 
     operationSuccess = WriteFile(deviceHandle, &macroRequest, sizeof(MACRO_REQUEST), &macroResponse, NULL);
 
-    cout << "Macro response: " << macroResponse << endl << "Operation success: " << (operationSuccess ? "true" : "false") << endl;
+    cout << "Macro response: " << hex << macroResponse << dec << endl << "Operation success: " << (operationSuccess ? "true" : "false") << endl;
 
-    if (macroResponse == MACRO_RESPONSE_KEY_DATA_AVAILABLE) 
+    if (macroResponse & MACRO_RESPONSE_FLAG_AVAILABLE) 
     {
-        ReadFromDevice(deviceHandle);
+        if (macroResponse & MACRO_RESPONSE_KEY_DATA)
+        {
+            ReadFromDevice(deviceHandle, InternalMacroReadCode::KeyData);
+        }
+        else if (macroResponse & MACRO_RESPONSE_KEYBOARD_DATA)
+        {
+            ReadFromDevice(deviceHandle, InternalMacroReadCode::KeyboardDevices);
+        }
     }
 
     switch (code) 
     {
         case MACRO_REQUEST_SET_CALLBACK:
-            if (macroResponse != MACRO_RESPONSE_CALLBACK_CANCELED)
+            if (macroResponse & MACRO_RESPONSE_FLAG_NO_RENEW)
             {
-                WriteToDevice(deviceHandle, code, data);
+                callbackActive = false;
+                break;
             }
+
+            WriteToDevice(deviceHandle, code, data);
             break;
     }
 }
 
-void ReadFromDevice(HANDLE deviceHandle) 
+void ReadFromDevice(HANDLE deviceHandle, InternalMacroReadCode readCode)
 {
     BOOL operationSuccess;
 
-    OUTPUT_BUFFER_STRUCT inputBuffer[OUTPUT_BUFFER_SIZE];
-
     DWORD macroResponse;
 
-    operationSuccess = ReadFile(deviceHandle, inputBuffer, OUTPUT_BUFFER_SIZE_BYTES, &macroResponse, NULL);
-
-    if (operationSuccess) 
+    switch (readCode) 
     {
-        for (int i = 0; i < macroResponse / sizeof(OUTPUT_BUFFER_STRUCT); i++)
-        {
-            cout << "Key code: " << inputBuffer[i].MakeCode << endl;
-            cout << "Flags: " << inputBuffer[i].Flags << endl;
-        }
+        case InternalMacroReadCode::KeyData:
+            OUTPUT_BUFFER_STRUCT inputBuffer[OUTPUT_BUFFER_SIZE];
+
+            operationSuccess = ReadFile(deviceHandle, inputBuffer, OUTPUT_BUFFER_SIZE_BYTES, &macroResponse, NULL);
+
+            if (operationSuccess)
+            {
+                for (int i = 0; i < macroResponse / sizeof(OUTPUT_BUFFER_STRUCT); i++)
+                {
+                    cout << "Key code: " << hex << inputBuffer[i].MakeCode << dec << endl;
+                    cout << "Flags: " << hex << inputBuffer[i].Flags << dec << endl;
+                }
+            }
+            break;
+        case InternalMacroReadCode::KeyboardDevices:
+
+            long long deviceBuffer[KEYBOARD_DEVICES_MAX_LENGTH + 1];
+
+            operationSuccess = ReadFile(deviceHandle, deviceBuffer, sizeof(HANDLE) * (KEYBOARD_DEVICES_MAX_LENGTH + 1), &macroResponse, NULL);
+            if (operationSuccess)
+            {
+                for (int i = 0; i < macroResponse / sizeof(HANDLE); i++)
+                {
+                    cout << "Device: " << hex << (unsigned long long)deviceBuffer[i] << dec << endl;
+                }
+            }
+
+            break;
     }
 }
 
@@ -177,7 +228,7 @@ HANDLE CreateDeviceHandle()
 
     if (handle == INVALID_HANDLE_VALUE)
     {
-        cout << "Handle error: " << GetLastError() << endl;
+        cerr << "Handle error: " << GetLastError() << endl;
         return NULL;
     }
 
