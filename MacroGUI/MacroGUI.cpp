@@ -1,25 +1,36 @@
 #include "MacroGUI.h"
 
 
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
-#include <stdio.h>
-#include "GLFW/glfw3.h"
-#include <ntddkbd.h>
-
 using namespace std;
 
 #define MAX_DEVPATH_LENGTH 512
 
 vector<HANDLE> handleList;
 
-bool callbackActive = false;
+bool MacroGuiWindowSettings::UnsavedChanges = false;
+bool MacroGuiWindowSettings::DebugWindowOpen = false;
+bool MacroGuiWindowSettings::DuplicateMacro = false;
+DuplicateMacroEnum MacroGuiWindowSettings::_resolveDuplicate = DuplicateMacroEnum::Default;
+MacroCommands MacroGuiWindowSettings::CurrMacroCommands = MacroCommands();
+MacroCommand MacroGuiWindowSettings::LastPacket = MacroCommand();
+mutex MacroGuiWindowSettings::_lastPacketLock;
+
+
+
 
 int main()
 {
-    HANDLE callbackHandle = CreateDeviceHandle();
-    HANDLE shortTermHandle = CreateDeviceHandle();
+    MacroCommands* commands = &MacroGuiWindowSettings::CurrMacroCommands;
+    commands->LoadCommands();
+
+
+    HANDLE callbackHandle = MacroInterface::CreateDeviceHandle();
+    HANDLE shortTermHandle = MacroInterface::CreateDeviceHandle();
+
+    if (callbackHandle != INVALID_HANDLE_VALUE && callbackHandle != NULL) 
+    {
+        MacroInterface::BeginMainCallback(callbackHandle);
+    }
 
     handleList.push_back(callbackHandle);
     handleList.push_back(shortTermHandle);
@@ -32,7 +43,7 @@ int main()
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 
-    GLFWwindow* window = glfwCreateWindow(600, 400, "Keyboard Macro", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(800, 600, "Keyboard Macro Tool", NULL, NULL);
     if (window == NULL)
         return 1;
 
@@ -57,6 +68,8 @@ int main()
     int tex_w, tex_h;
     io.Fonts->GetTexDataAsRGBA32(&tex_pixels, &tex_w, &tex_h);*/
 
+    //glfwSetKeyCallback(window, MacroGLFWKeyCallback);
+
     while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
@@ -65,59 +78,135 @@ int main()
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+        
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+
         bool my_tool_active = true;
 
-        ImGui::Begin("My First Tool", &my_tool_active, ImGuiWindowFlags_NoTitleBar);
-        /*if (ImGui::BeginMenuBar())
+        ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoCollapse | 
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus;
+
+        if (MacroGuiWindowSettings::UnsavedChanges) window_flags |= ImGuiWindowFlags_UnsavedDocument;
+
+        ImGui::Begin("Keyboard Macro", &my_tool_active, window_flags);
+
+        if (MacroGuiWindowSettings::UnsavedChanges && ImGui::IsKeyPressed(ImGuiKey_S, false) && ImGui::IsKeyDown(ImGuiKey_LeftCtrl))
+        {
+            MacroGuiWindowSettings::SaveChanges();
+        }
+
+        if (ImGui::BeginMenuBar())
         {
             if (ImGui::BeginMenu("File"))
             {
-                if (ImGui::MenuItem("Close", "Ctrl+W")) { my_tool_active = false; }
+                if (ImGui::MenuItem("Reload macros"))
+                {
+                    commands->CommandList.clear();
+                    commands->LoadCommands();
+                }
+                if (ImGui::MenuItem("Save", "CTRL+S", false, MacroGuiWindowSettings::UnsavedChanges))
+                { 
+                    MacroGuiWindowSettings::SaveChanges();
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Debug"))
+            {
+                if (ImGui::MenuItem("Open debug window"))
+                {
+                    MacroGuiWindowSettings::DebugWindowOpen = true;
+                }
+                else if (ImGui::MenuItem("Send callback"))
+                {
+                    if (!MacroInterface::MainCallbackActive)
+                    {
+                        std::cout << "Send callback" << endl;
+
+                        MacroInterface::BeginMainCallback(callbackHandle);
+                    }
+                }
+                else if (ImGui::MenuItem("Stop reading inputs")) 
+                {
+                    thread endCallbackThread(MacroInterface::WriteToDevice, shortTermHandle, MACRO_REQUEST_CANCEL_CALLBACK, 0);
+
+                    endCallbackThread.join();
+                }
+                else if (ImGui::MenuItem("Get devices"))
+                {
+                    thread devicesThread(MacroInterface::WriteToDevice, shortTermHandle, MACRO_REQUEST_GET_KEYBOARDS, 0);
+
+                    devicesThread.join();
+                }
+                else if (ImGui::MenuItem("Unregister device"))
+                {
+                    thread devicesThread(MacroInterface::WriteToDevice, shortTermHandle, MACRO_REQUEST_UNREGISTER_KEYBOARD, 0);
+
+                    devicesThread.join();
+                }
+                else if (ImGui::MenuItem("Duplicate test"))
+                {
+                    MacroGuiWindowSettings::DuplicateMacro = true;
+                }
+
+
                 ImGui::EndMenu();
             }
             ImGui::EndMenuBar();
-        }*/
-
-        if (ImGui::Button("Send callback"))
-        {
-            if (!callbackActive) 
-            {
-                cout << "Send callback" << endl;
-
-                callbackActive = true;
-                thread(WriteToDevice, callbackHandle, MACRO_REQUEST_SET_CALLBACK, 0).detach();
-            }
         }
 
-        if (ImGui::Button("Stop reading inputs"))
+
+        if (ImGui::CollapsingHeader("Commands", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            thread endCallbackThread(WriteToDevice, shortTermHandle, MACRO_REQUEST_CANCEL_CALLBACK, 0);
-
-            
-
-            endCallbackThread.join();
+            commands->CreateCommandsTable();
         }
+        
 
-        if (ImGui::Button("Get devices"))
-        {
-            thread devicesThread(WriteToDevice, shortTermHandle, MACRO_REQUEST_GET_KEYBOARDS, 0);
+        ImGui::Separator();
 
-            devicesThread.join();
-        }
-
-        if (ImGui::Button("Unregister device"))
-        {
-            thread devicesThread(WriteToDevice, shortTermHandle, MACRO_REQUEST_UNREGISTER_KEYBOARD, 0);
-
-            devicesThread.join();
-        }
+        /*bool demoWindowOpen = true;
+        ImGui::ShowDemoWindow(&demoWindowOpen);*/
 
         ImGui::End();
+
+        ImGui::PopStyleVar(1);
+
+        HandlePopups();
+
+        if (MacroGuiWindowSettings::DebugWindowOpen)
+        {
+            ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+
+            ImGui::SetNextWindowPos(ImVec2(0.0f, displaySize.y - 100));
+            ImGui::SetNextWindowSize(ImVec2(displaySize.x, 100));
+
+            //ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+
+            window_flags = ImGuiWindowFlags_NoCollapse |
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
+
+            ImGui::Begin("Debug Window", &MacroGuiWindowSettings::DebugWindowOpen, window_flags);
+
+            ImGui::Text("Connected to driver: %s", MacroInterface::MainCallbackActive ? "true" : "false");
+
+            ImGui::SameLine(0, 100);
+
+            MacroGuiWindowSettings::_lastPacketLock.lock();
+            ImGui::Text("Last packet: %s", MacroGuiWindowSettings::LastPacket.CodeString.c_str());
+            MacroGuiWindowSettings::_lastPacketLock.unlock();
+
+            ImGui::End();
+        }
+
+        
 
         ImGui::Render();
         int display_w, display_h;
         glfwGetFramebufferSize(window, &display_w, &display_h);
         glViewport(0, 0, display_w, display_h);
+
         glClear(GL_COLOR_BUFFER_BIT);
 
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -132,8 +221,8 @@ int main()
     glfwDestroyWindow(window);
     glfwTerminate();
 
-    thread endThread(WriteToDevice, shortTermHandle, MACRO_REQUEST_CANCEL_CALLBACK, 0);
-    cout << "closing handles" << endl;
+    thread endThread(MacroInterface::WriteToDevice, shortTermHandle, MACRO_REQUEST_CANCEL_CALLBACK, 0);
+    std::cout << "closing handles" << endl;
     for (int i = 0; i < handleList.size(); i++)
     {
         CloseHandle(handleList[i]);
@@ -142,95 +231,63 @@ int main()
     return 0;
 }
 
-
-void WriteToDevice(HANDLE deviceHandle, int code, long long data)
+int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd)
 {
-    BOOL operationSuccess;
-
-    MACRO_REQUEST macroRequest;
-    macroRequest.Code = code;
-    macroRequest.Data = data;
-
-    DWORD macroResponse;
-
-    operationSuccess = WriteFile(deviceHandle, &macroRequest, sizeof(MACRO_REQUEST), &macroResponse, NULL);
-
-    cout << "Macro response: " << hex << macroResponse << dec << endl << "Operation success: " << (operationSuccess ? "true" : "false") << endl;
-
-    if (macroResponse & MACRO_RESPONSE_FLAG_AVAILABLE) 
-    {
-        if (macroResponse & MACRO_RESPONSE_KEY_DATA)
-        {
-            ReadFromDevice(deviceHandle, InternalMacroReadCode::KeyData);
-        }
-        else if (macroResponse & MACRO_RESPONSE_KEYBOARD_DATA)
-        {
-            ReadFromDevice(deviceHandle, InternalMacroReadCode::KeyboardDevices);
-        }
-    }
-
-    switch (code) 
-    {
-        case MACRO_REQUEST_SET_CALLBACK:
-            if (macroResponse & MACRO_RESPONSE_FLAG_NO_RENEW)
-            {
-                callbackActive = false;
-                break;
-            }
-
-            WriteToDevice(deviceHandle, code, data);
-            break;
-    }
+    main();
 }
 
-void ReadFromDevice(HANDLE deviceHandle, InternalMacroReadCode readCode)
+void HandlePopups() 
 {
-    BOOL operationSuccess;
 
-    DWORD macroResponse;
-
-    switch (readCode) 
+    if(MacroGuiWindowSettings::DuplicateMacro)
     {
-        case InternalMacroReadCode::KeyData:
-            OUTPUT_BUFFER_STRUCT inputBuffer[OUTPUT_BUFFER_SIZE];
-
-            operationSuccess = ReadFile(deviceHandle, inputBuffer, OUTPUT_BUFFER_SIZE_BYTES, &macroResponse, NULL);
-
-            if (operationSuccess)
-            {
-                for (int i = 0; i < macroResponse / sizeof(OUTPUT_BUFFER_STRUCT); i++)
-                {
-                    cout << "Key code: " << hex << inputBuffer[i].MakeCode << dec << endl;
-                    cout << "Flags: " << hex << inputBuffer[i].Flags << dec << endl;
-                }
-            }
-            break;
-        case InternalMacroReadCode::KeyboardDevices:
-
-            long long deviceBuffer[KEYBOARD_DEVICES_MAX_LENGTH + 1];
-
-            operationSuccess = ReadFile(deviceHandle, deviceBuffer, sizeof(HANDLE) * (KEYBOARD_DEVICES_MAX_LENGTH + 1), &macroResponse, NULL);
-            if (operationSuccess)
-            {
-                for (int i = 0; i < macroResponse / sizeof(HANDLE); i++)
-                {
-                    cout << "Device: " << hex << (unsigned long long)deviceBuffer[i] << dec << endl;
-                }
-            }
-
-            break;
+        ImGui::OpenPopup("Duplicate Key Combination");
     }
-}
+    
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 
-HANDLE CreateDeviceHandle() 
-{
-    HANDLE handle = CreateFile(DOS_DEVICE_PATH, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-
-    if (handle == INVALID_HANDLE_VALUE)
+    if (ImGui::BeginPopupModal("Duplicate Key Combination", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) 
     {
-        cerr << "Handle error: " << GetLastError() << endl;
-        return NULL;
-    }
+        ImGui::Text("This key combination is already in use by another macro.\n\n");
+        ImGui::Separator();
 
-    return handle;
+        auto create = []()
+        {
+            MacroGuiWindowSettings::DuplicateMacro = false;
+            MacroGuiWindowSettings::_resolveDuplicate = DuplicateMacroEnum::Ignore;
+            ImGui::CloseCurrentPopup();
+        };
+
+        auto cancel = []()
+        {
+            MacroGuiWindowSettings::DuplicateMacro = false;
+            MacroGuiWindowSettings::_resolveDuplicate = DuplicateMacroEnum::Cancel;
+            ImGui::CloseCurrentPopup();
+        };
+
+        if (ImGui::Button("Cancel"))
+        {
+            cancel();
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Create anyway"))
+        {
+            create();
+        }
+
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) 
+        {
+            cancel();
+        }
+
+        if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_Space))
+        {
+            create();
+        }
+
+        ImGui::EndPopup();
+    }
 }

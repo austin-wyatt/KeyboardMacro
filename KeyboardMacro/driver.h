@@ -1,7 +1,5 @@
 #pragma once
 
-#include <initguid.h>
-
 #include <ntddk.h>
 #include <wdf.h>
 #include <wdmsec.h>

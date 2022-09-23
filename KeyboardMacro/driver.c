@@ -285,7 +285,7 @@ VOID KeyboardMacroServiceCallback(
 				deviceExtension->KEYS_DOWN--;
 				deviceExtension->KEY_MAP[i->MakeCode] = 0;
 			}
-			else
+			else if(!(i->Flags & KEY_BREAK))
 			{
 				//Check if this is a repeat key
 				if (deviceExtension->KEY_MAP[i->MakeCode] == 0)
@@ -298,6 +298,10 @@ VOID KeyboardMacroServiceCallback(
 						memcpy((OUTPUT_BUFFER_STRUCT*)deviceExtension->OUTPUT_BUFFER + deviceExtension->OutputBufferLength, i, sizeof(OUTPUT_BUFFER_STRUCT));
 
 						deviceExtension->OutputBufferLength++;
+					}
+					else
+					{
+						InitializeKeyData(deviceExtension);
 					}
 				}
 			}

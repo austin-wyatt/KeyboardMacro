@@ -16,7 +16,7 @@ typedef struct _MACRO_REQUEST
 	long long Data;
 } MACRO_REQUEST, *PMACRO_REQUEST;
 
-//The next read request will return a list of int IDs terminated with -1
+//The next read request will return a list of int IDs
 #define MACRO_REQUEST_GET_KEYBOARDS 0x1 
 //pass the ID of the keyboard to register in the Data field
 #define MACRO_REQUEST_REGISTER_KEYBOARD 0x2 
@@ -46,9 +46,3 @@ typedef struct _MACRO_REQUEST
 #define MACRO_RESPONSE_KEY_DATA_AVAILABLE (MACRO_RESPONSE_KEY_DATA | MACRO_RESPONSE_FLAG_AVAILABLE)
 #define MACRO_RESPONSE_KEYBOARD_DATA_AVAILABLE (MACRO_RESPONSE_KEYBOARD_DATA | MACRO_RESPONSE_FLAG_AVAILABLE)
 
-
-
-
-DEFINE_GUID(
-	KEYBOARD_MACRO_GUID,
-	0xC4833AD3, 0xEDC7, 0x4320, 0x8E, 0x5E, 0xCC, 0xD2, 0x6A, 0x6F, 0x06, 0x8A);

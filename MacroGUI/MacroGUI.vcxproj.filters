@@ -39,6 +39,15 @@
     <ClCompile Include="..\..\..\..\Libraries\imgui\backends\imgui_impl_opengl3.cpp">
       <Filter>Resource Files</Filter>
     </ClCompile>
+    <ClCompile Include="MacroCommands.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\Libraries\imgui\misc\cpp\imgui_stdlib.cpp">
+      <Filter>Resource Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MacroInterface.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\..\..\Libraries\imgui\imconfig.h">
@@ -60,6 +69,15 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MacroGUI.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MacroCommands.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\..\Libraries\imgui\misc\cpp\imgui_stdlib.h">
+      <Filter>Resource Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MacroInterface.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
